@@ -6,7 +6,7 @@
       "type": "cppdbg",
       "request": "launch",
       "program": "${workspaceFolder}/enunciado/wish",
-      "args": ["${workspaceFolder}/enunciado/tests/4.in"],
+      "args": ["tests/p2a-tests/bad"],
       "stopAtEntry": false,
       "cwd": "${fileDirname}",
       "environment": [],

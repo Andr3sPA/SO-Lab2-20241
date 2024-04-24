@@ -140,7 +140,6 @@ void runShell(FILE *inputFile)
         {
             if (batchProcessing)
             {
-                printf("end of file reached");
                 break;
             }
             fprintf(stderr, "error: %s", strerror(errno));
@@ -154,13 +153,6 @@ void runShell(FILE *inputFile)
 
         while (token != NULL)
         {
-            if (command.size == 0)
-            {
-                command.args[0] = token;
-                command.size++;
-                token = strtok(NULL, " \n\t");
-                continue;
-            }
             command.args[command.size] = token;
             command.size++;
 
@@ -179,6 +171,7 @@ void runShell(FILE *inputFile)
             if (command.size > 1)
             {
                 fprintf(stderr, "error:\n\tcommand 'exit' does not accept arguments\n");
+                continue;
             }
             if (!batchProcessing)
                 printf("%sbyeee\n%s", CYAN, RESET);
@@ -215,10 +208,17 @@ int main(int argc, char const *argv[])
 
     if (batchProcessing)
     {
-
         FILE *commandsFile = fopen(argv[1], "r");
-        runShell(commandsFile);
-        fclose(commandsFile);
+        if (commandsFile == NULL)
+        {
+            fprintf(stderr, "error:\n\tcannot open file '%s': %s\n", argv[1], strerror(errno));
+            exitCode = 1;
+        }
+        else
+        {
+            runShell(commandsFile);
+            fclose(commandsFile);
+        }
     }
     else
     {

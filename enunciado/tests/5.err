@@ -1,1 +1,2 @@
-An error has occurred
+error:
+	command 'exit' does not accept arguments

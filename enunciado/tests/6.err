@@ -1,1 +1,2 @@
-An error has occurred
+error:
+	command 'p1.sh' not found

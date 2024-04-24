@@ -1,1 +1,2 @@
-An error has occurred
+error:
+	command 'cd' must have exactly one argument

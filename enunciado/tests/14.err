@@ -1,1 +1,2 @@
-An error has occurred
+error:
+	cannot open file 'tests/p2a-tests/bad': No such file or directory
