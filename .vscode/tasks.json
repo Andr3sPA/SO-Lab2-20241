@@ -1,0 +1,23 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build",
+      "command": "gcc",
+      "type": "shell",
+      "args": [
+        "${workspaceFolder}/enunciado/wish.c",
+        "-o",
+        "${workspaceFolder}/enunciado/wish",
+        "-Wall",
+        "-g",
+        "-O0"
+      ],
+      "problemMatcher": ["$gcc"],
+      "presentation": {
+        "reveal": "silent"
+      },
+      "group": "build"
+    }
+  ]
+}
