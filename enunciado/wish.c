@@ -20,7 +20,7 @@
 #define ITALIC "\x1B[3m"
 #define UNDERLINE "\x1B[4m"
 
-char *path[] = {"/usr/bin/"};
+char *path[] = {"/usr/bin"};
 
 char *inputLine;
 char *filePath;
@@ -33,16 +33,31 @@ struct
     int capacity;
 } command;
 
-int exitCode = 0;
+int exitCode;
+int batchProcessing;
 
 /* 0 false, 1 true */
 int checkAccess(char *filename, char **filePath)
 {
     int canAccess;
+    char *workingDir = getcwd(NULL, 0);
+    char cat[strlen(workingDir) + strlen(filename) + 1];
+    strcpy(cat, workingDir);
+    free(workingDir);
+    strcat(cat, "/");
+    strcat(cat, filename);
+    canAccess = 1 + access(cat, X_OK);
+    if (canAccess)
+    {
+        strcpy(*filePath, cat);
+        return canAccess;
+    }
+
     for (int i = 0; i < sizeof(path) / sizeof(path[0]); i++)
     {
-        char cat[strlen(path[i]) + strlen(filename)];
+        char cat[strlen(path[i]) + strlen(filename) + 1];
         strcpy(cat, path[i]);
+        strcat(cat, "/");
         strcat(cat, filename);
         canAccess = 1 + access(cat, X_OK);
         if (canAccess)
@@ -54,32 +69,86 @@ int checkAccess(char *filename, char **filePath)
     return 0;
 }
 
-int main(int argc, char const *argv[])
+/* 0 stop shell, 1 continue*/
+int processCommand()
 {
-    inputLine = malloc(sizeof(char) * LINE_MAX);
-    filePath = malloc(sizeof(char) * LINE_MAX);
+    if (strcmp(command.args[0], "cd") == 0)
+    {
+        if (command.size != 2)
+        {
+            fprintf(stderr, "error:\n\tcommand 'cd' must have exactly one argument\n");
+            return 1;
+        }
+        if (chdir(command.args[1]) == -1)
+        {
+            fprintf(stderr, "error:\n\tcannot execute command 'cd': %s\n", strerror(errno));
+            return 1;
+        }
+    }
 
-    command.size = 0;
-    command.capacity = 10;
-    command.args = malloc(command.capacity * sizeof(char *));
+    else if (strcmp(command.args[0], "path") == 0)
+    {
+        fprintf(stderr, "error:\n\tcommand 'path' is not implemented\n");
+    }
+    else if (strcmp(command.args[0], "cls") == 0)
+    {
+        pid_t child = fork();
+        if (child == 0)
+            execv("/usr/bin/clear", command.args);
+        else
+            waitpid(child, NULL, 0);
+    }
+    else if (checkAccess(command.args[0], &filePath))
+    {
+        pid_t child = fork();
+        if (child == -1)
+        {
+            if (batchProcessing)
+                fprintf(stderr, "error: %s\n", strerror(errno));
+            else
+                fprintf(stderr, "%serror: %s%s\n", RED, strerror(errno), RESET);
+            exitCode = 1;
+            return 0;
+        }
+        if (child == 0)
+            execv(filePath, command.args);
+        else
+            waitpid(child, NULL, 0);
+    }
+    else
+    {
+        if (batchProcessing)
+            fprintf(stderr, "error:\n\tcommand '%s' not found\n", command.args[0]);
+        else
+            fprintf(stderr, "%serror:\n\tcommand '%s' not found\n", RED, command.args[0]);
+    }
+    return 1;
+}
 
+void runShell(FILE *inputFile)
+{
     while (1)
     {
-        // memset(command.args, NULL, sizeof(char) * command.size);
         command.size = 0;
 
-        printf("%swish> %s", MAGENTA, RESET);
+        if (!batchProcessing)
+            printf("%swish> %s", MAGENTA, RESET);
 
-        fgets(inputLine, LINE_MAX, stdin);
+        fgets(inputLine, LINE_MAX, inputFile);
 
-        if (inputLine == NULL)
+        if (inputLine == NULL || feof(inputFile))
         {
+            if (batchProcessing)
+            {
+                printf("end of file reached");
+                break;
+            }
             fprintf(stderr, "error: %s", strerror(errno));
             exitCode = 1;
             break;
         }
 
-        token = strtok(inputLine, " \n");
+        token = strtok(inputLine, " \n\t");
         if (token == NULL)
             continue;
 
@@ -89,7 +158,7 @@ int main(int argc, char const *argv[])
             {
                 command.args[0] = token;
                 command.size++;
-                token = strtok(NULL, " \n");
+                token = strtok(NULL, " \n\t");
                 continue;
             }
             command.args[command.size] = token;
@@ -101,36 +170,62 @@ int main(int argc, char const *argv[])
                 command.args = realloc(command.args, sizeof(char *) * command.capacity);
             }
 
-            printf("DEBUG: arg found: %s\n", token);
-            token = strtok(NULL, " \n");
+            token = strtok(NULL, " \n\t");
         }
         command.args[command.size] = NULL;
 
         if (strcmp(command.args[0], "exit") == 0)
         {
-            printf("%sbyeee\n%s", CYAN, RESET);
-            break;
-        }
-        else if (checkAccess(command.args[0], &filePath))
-        {
-            pid_t child = fork();
-            if (child == -1)
+            if (command.size > 1)
             {
-                fprintf(stderr, "%serror: %s%s\n", RED, strerror(errno), RESET);
-                exitCode = 1;
-                break;
+                fprintf(stderr, "error:\n\tcommand 'exit' does not accept arguments\n");
             }
-            if (child == 0)
-                execv(filePath, command.args);
-            else
-                waitpid(child, NULL, 0);
+            if (!batchProcessing)
+                printf("%sbyeee\n%s", CYAN, RESET);
+            break;
         }
         else
         {
-            fprintf(stderr, "%serror:\n\tcommand '%s' not found\n", RED, command.args[0]);
+            if (!processCommand())
+            {
+                break;
+            }
         }
     }
+}
 
+int main(int argc, char const *argv[])
+{
+    inputLine = malloc(sizeof(char) * LINE_MAX);
+    filePath = malloc(sizeof(char) * LINE_MAX);
+
+    command.size = 0;
+    command.capacity = 10;
+    command.args = malloc(command.capacity * sizeof(char *));
+
+    exitCode = 0;
+
+    batchProcessing = argc == 2;
+    if (argc > 2)
+    {
+        fprintf(stderr, "unimplemented");
+        exitCode = 1;
+        goto exit;
+    }
+
+    if (batchProcessing)
+    {
+
+        FILE *commandsFile = fopen(argv[1], "r");
+        runShell(commandsFile);
+        fclose(commandsFile);
+    }
+    else
+    {
+        runShell(stdin);
+    }
+
+exit:
     free(inputLine);
     free(filePath);
     exit(exitCode);
