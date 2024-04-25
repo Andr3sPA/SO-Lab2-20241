@@ -8,6 +8,18 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#define INIT_ARR(arrStruct, arrField) \
+    arrStruct.size = 0;               \
+    arrStruct.capacity = 2;           \
+    arrStruct.arrField = malloc(sizeof(char *) * arrStruct.capacity);
+
+#define REALLOC(arrStruct, arrField)                                                           \
+    if (arrStruct.size == arrStruct.capacity)                                                  \
+    {                                                                                          \
+        arrStruct.capacity *= 2;                                                               \
+        arrStruct.arrField = realloc(arrStruct.arrField, sizeof(char *) * arrStruct.capacity); \
+    }
+
 #define RED "\x1B[31m"
 #define GREEN "\x1B[32m"
 #define YELLOW "\x1B[33m"
@@ -20,7 +32,12 @@
 #define ITALIC "\x1B[3m"
 #define UNDERLINE "\x1B[4m"
 
-char *path[] = {"/usr/bin"};
+struct
+{
+    char **entries;
+    int size;
+    int capacity;
+} path;
 
 char *inputLine;
 char *filePath;
@@ -40,23 +57,23 @@ int batchProcessing;
 int checkAccess(char *filename, char **filePath)
 {
     int canAccess;
-    char *workingDir = getcwd(NULL, 0);
-    char cat[strlen(workingDir) + strlen(filename) + 1];
-    strcpy(cat, workingDir);
-    free(workingDir);
-    strcat(cat, "/");
-    strcat(cat, filename);
-    canAccess = 1 + access(cat, X_OK);
+    // char *workingDir = getcwd(NULL, 0);
+    // char cat[strlen(workingDir) + strlen(filename) + 1];
+    // strcpy(cat, workingDir);
+    // free(workingDir);
+    // strcat(cat, "/");
+    // strcat(cat, filename);
+    canAccess = 1 + access(filename, X_OK);
     if (canAccess)
     {
-        strcpy(*filePath, cat);
+        strcpy(*filePath, filename);
         return canAccess;
     }
 
-    for (int i = 0; i < sizeof(path) / sizeof(path[0]); i++)
+    for (int i = 0; i < path.size; i++)
     {
-        char cat[strlen(path[i]) + strlen(filename) + 1];
-        strcpy(cat, path[i]);
+        char cat[strlen(path.entries[i]) + strlen(filename) + 1];
+        strcpy(cat, path.entries[i]);
         strcat(cat, "/");
         strcat(cat, filename);
         canAccess = 1 + access(cat, X_OK);
@@ -88,7 +105,19 @@ int processCommand()
 
     else if (strcmp(command.args[0], "path") == 0)
     {
-        fprintf(stderr, "error:\n\tcommand 'path' is not implemented\n");
+        // delete all entries in path
+        for (int i = 0; i < path.size; i++)
+        {
+            free(path.entries[i]);
+        }
+        path.size = 0;
+
+        // copy all paths from command to path
+        for (int i = 1; i < command.size; i++)
+        {
+            path.entries[path.size] = malloc(strlen(command.args[i]) * sizeof(char));
+            strcpy(path.entries[path.size++], command.args[i]);
+        }
     }
     else if (strcmp(command.args[0], "cls") == 0)
     {
@@ -100,13 +129,44 @@ int processCommand()
     }
     else if (checkAccess(command.args[0], &filePath))
     {
+        FILE *outputFile = NULL; // maybe global?
+
+        // Busca el símbolo de redirección en los argumentos del comando
+        int redirectIndex = -1;
+        for (int i = 0; i < command.size; i++)
+        {
+            if (strcmp(command.args[i], ">") == 0)
+            {
+                redirectIndex = i;
+                break;
+            }
+        }
+
+        // Si se encuentra el símbolo de redirección
+        if (redirectIndex != -1)
+        {
+            // Verifica si hay un nombre de archivo de salida después del símbolo de redirección
+            if (command.size - (redirectIndex + 1) != 1)
+            {
+                fprintf(stderr, "An error has occurred\n");
+                return 1;
+            }
+
+            // Abre el archivo de salida para redireccionar la salida estándar
+            outputFile = freopen(command.args[redirectIndex + 1], "w+", stdout);
+            if (outputFile == NULL)
+            {
+                fprintf(stderr, "error: Cannot open output file '%s': %s\n", command.args[redirectIndex + 1], strerror(errno));
+                return 1;
+            }
+
+            command.args[redirectIndex] = NULL; // to call execv (see docs)
+        }
+
         pid_t child = fork();
         if (child == -1)
         {
-            if (batchProcessing)
-                fprintf(stderr, "error: %s\n", strerror(errno));
-            else
-                fprintf(stderr, "%serror: %s%s\n", RED, strerror(errno), RESET);
+            fprintf(stderr, "error: %s\n", strerror(errno));
             exitCode = 1;
             return 0;
         }
@@ -114,6 +174,15 @@ int processCommand()
             execv(filePath, command.args);
         else
             waitpid(child, NULL, 0);
+
+        if (redirectIndex != -1 && outputFile != NULL)
+        {
+            // Cierra el archivo de salida después de terminar de usarlo
+            fclose(outputFile);
+
+            // Restaura la salida estándar
+            freopen("/dev/tty", "w", stdout);
+        }
     }
     else
     {
@@ -122,7 +191,8 @@ int processCommand()
         else
             fprintf(stderr, "%serror:\n\tcommand '%s' not found\n", RED, command.args[0]);
     }
-    return 1;
+
+    return 1; // Indica que el comando se procesó correctamente
 }
 
 void runShell(FILE *inputFile)
@@ -132,7 +202,12 @@ void runShell(FILE *inputFile)
         command.size = 0;
 
         if (!batchProcessing)
+        {
+            char *cwd = getcwd(NULL, 0);
+            printf("%s%s%s\n", CYAN, cwd, RESET);
             printf("%swish> %s", MAGENTA, RESET);
+            free(cwd);
+        }
 
         fgets(inputLine, LINE_MAX, inputFile);
 
@@ -156,11 +231,7 @@ void runShell(FILE *inputFile)
             command.args[command.size] = token;
             command.size++;
 
-            if (command.size == command.capacity)
-            {
-                command.capacity *= 2;
-                command.args = realloc(command.args, sizeof(char *) * command.capacity);
-            }
+            REALLOC(command, args);
 
             token = strtok(NULL, " \n\t");
         }
@@ -184,6 +255,8 @@ void runShell(FILE *inputFile)
                 break;
             }
         }
+        // if (!batchProcessing)
+        //     printf("\n");
     }
 }
 
@@ -192,9 +265,10 @@ int main(int argc, char const *argv[])
     inputLine = malloc(sizeof(char) * LINE_MAX);
     filePath = malloc(sizeof(char) * LINE_MAX);
 
-    command.size = 0;
-    command.capacity = 10;
-    command.args = malloc(command.capacity * sizeof(char *));
+    INIT_ARR(command, args);
+    INIT_ARR(path, entries);
+    path.entries[path.size] = malloc(strlen("/bin") * sizeof(char));
+    strcpy(path.entries[path.size++], "/bin");
 
     exitCode = 0;
 
@@ -226,6 +300,10 @@ int main(int argc, char const *argv[])
     }
 
 exit:
+    free(command.args);
+    free(path.entries);
+    // FREE_ARR(command, args);
+    // FREE_ARR(path, entries);
     free(inputLine);
     free(filePath);
     exit(exitCode);
