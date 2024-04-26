@@ -1,1 +1,2 @@
-An error has occurred
+error:
+	the redirection must have a command to redirect its output

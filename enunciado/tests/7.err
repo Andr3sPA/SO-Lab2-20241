@@ -1,2 +1,4 @@
-An error has occurred
-An error has occurred
+error:
+	command 'p1.sh' not found
+error:
+	command 'ls' not found
