@@ -7,17 +7,18 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 
-#define INIT_ARR(arrStruct, arrField) \
-    arrStruct.size = 0;               \
-    arrStruct.capacity = 2;           \
-    arrStruct.arrField = malloc(sizeof(char *) * arrStruct.capacity);
+#define INIT_ARR(arrStruct, arrField, arrType) \
+    arrStruct.size = 0;                        \
+    arrStruct.capacity = 2;                    \
+    arrStruct.arrField = calloc(sizeof(arrType), arrStruct.capacity);
 
-#define REALLOC(arrStruct, arrField)                                                           \
-    if (arrStruct.size == arrStruct.capacity)                                                  \
-    {                                                                                          \
-        arrStruct.capacity *= 2;                                                               \
-        arrStruct.arrField = realloc(arrStruct.arrField, sizeof(char *) * arrStruct.capacity); \
+#define REALLOC(arrStruct, arrField, arrType)                                                   \
+    if (arrStruct.size == arrStruct.capacity)                                                   \
+    {                                                                                           \
+        arrStruct.capacity *= 2;                                                                \
+        arrStruct.arrField = realloc(arrStruct.arrField, sizeof(arrType) * arrStruct.capacity); \
     }
 
 #define RED "\x1B[31m"
@@ -43,12 +44,19 @@ char *inputLine;
 char *filePath;
 char *token;
 
-struct
+struct Command
 {
     char **args;
     int size;
     int capacity;
-} command;
+};
+
+struct
+{
+    struct Command **singleCommands;
+    int size;
+    int capacity;
+} commands;
 
 int exitCode;
 int batchProcessing;
@@ -57,12 +65,6 @@ int batchProcessing;
 int checkAccess(char *filename, char **filePath)
 {
     int canAccess;
-    // char *workingDir = getcwd(NULL, 0);
-    // char cat[strlen(workingDir) + strlen(filename) + 1];
-    // strcpy(cat, workingDir);
-    // free(workingDir);
-    // strcat(cat, "/");
-    // strcat(cat, filename);
     canAccess = 1 + access(filename, X_OK);
     if (canAccess)
     {
@@ -87,23 +89,35 @@ int checkAccess(char *filename, char **filePath)
 }
 
 /* 0 stop shell, 1 continue*/
-int processCommand()
+int processCommand(struct Command *command)
 {
-    if (strcmp(command.args[0], "cd") == 0)
+    if (strcmp(command->args[0], "exit") == 0)
     {
-        if (command.size != 2)
+        if (command->size > 1)
+        {
+            fprintf(stderr, "error:\n\tcommand 'exit' does not accept arguments\n");
+            return 1;
+        }
+        if (!batchProcessing)
+            printf("%sbyeee\n%s", CYAN, RESET);
+        return 0;
+    }
+
+    else if (strcmp(command->args[0], "cd") == 0)
+    {
+        if (command->size != 2)
         {
             fprintf(stderr, "error:\n\tcommand 'cd' must have exactly one argument\n");
             return 1;
         }
-        if (chdir(command.args[1]) == -1)
+        if (chdir(command->args[1]) == -1)
         {
             fprintf(stderr, "error:\n\tcannot execute command 'cd': %s\n", strerror(errno));
             return 1;
         }
     }
 
-    else if (strcmp(command.args[0], "path") == 0)
+    else if (strcmp(command->args[0], "path") == 0)
     {
         // delete all entries in path
         for (int i = 0; i < path.size; i++)
@@ -113,83 +127,81 @@ int processCommand()
         path.size = 0;
 
         // copy all paths from command to path
-        for (int i = 1; i < command.size; i++)
+        for (int i = 1; i < command->size; i++)
         {
-            path.entries[path.size] = malloc(strlen(command.args[i]) * sizeof(char));
-            strcpy(path.entries[path.size++], command.args[i]);
+            path.entries[path.size] = malloc(strlen(command->args[i]) * sizeof(char));
+            strcpy(path.entries[path.size++], command->args[i]);
         }
     }
-    else if (strcmp(command.args[0], "cls") == 0)
+    else if (strcmp(command->args[0], "cls") == 0)
     {
         pid_t child = fork();
         if (child == 0)
-            execv("/usr/bin/clear", command.args);
+            execv("/usr/bin/clear", command->args);
         else
             waitpid(child, NULL, 0);
     }
-    else if (checkAccess(command.args[0], &filePath))
+    else
     {
-        FILE *outputFile = NULL; // maybe global?
-
         // Busca el símbolo de redirección en los argumentos del comando
         int redirectIndex = -1;
-        for (int i = 0; i < command.size; i++)
+        for (int i = 0; i < command->size; i++)
         {
-            if (strcmp(command.args[i], ">") == 0)
+
+            // Si se encuentra el símbolo de redirección
+            if (strcmp(command->args[i], ">") == 0)
             {
                 redirectIndex = i;
+                if (redirectIndex == 0)
+                {
+                    fprintf(stderr, "error:\n\tthe redirection must have a command to redirect its output\n");
+                    return 1;
+                }
+
+                // Verifica si hay un nombre de archivo de salida después del símbolo de redirección
+                if (command->size - (redirectIndex + 1) != 1)
+                {
+                    fprintf(stderr, "error:\n\tthe redirection must have only one output file\n");
+                    return 1;
+                }
+
+                command->args[redirectIndex] = NULL; // to call execv (see docs)
                 break;
             }
         }
 
-        // Si se encuentra el símbolo de redirección
-        if (redirectIndex != -1)
+        // check if command can be executed in any path entry
+        if (checkAccess(command->args[0], &filePath))
         {
-            // Verifica si hay un nombre de archivo de salida después del símbolo de redirección
-            if (command.size - (redirectIndex + 1) != 1)
+
+            pid_t child = fork();
+            if (child == -1)
             {
-                fprintf(stderr, "An error has occurred\n");
-                return 1;
+                fprintf(stderr, "error: %s\n", strerror(errno));
+                exitCode = 1;
+                return 0;
             }
-
-            // Abre el archivo de salida para redireccionar la salida estándar
-            outputFile = freopen(command.args[redirectIndex + 1], "w+", stdout);
-            if (outputFile == NULL)
+            if (child == 0)
             {
-                fprintf(stderr, "error: Cannot open output file '%s': %s\n", command.args[redirectIndex + 1], strerror(errno));
-                return 1;
+                if (redirectIndex != -1)
+                {
+                    int redirectFileDescriptor = open(command->args[redirectIndex + 1], O_RDWR | O_CREAT | S_IRUSR | S_IWUSR);
+                    dup2(redirectFileDescriptor, 1); // stdout
+                    dup2(redirectFileDescriptor, 2); // stderr
+                    close(redirectFileDescriptor);
+                }
+                execv(filePath, command->args);
             }
-
-            command.args[redirectIndex] = NULL; // to call execv (see docs)
+            // else
+            // waitpid(child, NULL, 0);
         }
-
-        pid_t child = fork();
-        if (child == -1)
-        {
-            fprintf(stderr, "error: %s\n", strerror(errno));
-            exitCode = 1;
-            return 0;
-        }
-        if (child == 0)
-            execv(filePath, command.args);
         else
-            waitpid(child, NULL, 0);
-
-        if (redirectIndex != -1 && outputFile != NULL)
         {
-            // Cierra el archivo de salida después de terminar de usarlo
-            fclose(outputFile);
-
-            // Restaura la salida estándar
-            freopen("/dev/tty", "w", stdout);
+            if (batchProcessing)
+                fprintf(stderr, "error:\n\tcommand '%s' not found\n", command->args[0]);
+            else
+                fprintf(stderr, "%serror:\n\tcommand '%s' not found\n", RED, command->args[0]);
         }
-    }
-    else
-    {
-        if (batchProcessing)
-            fprintf(stderr, "error:\n\tcommand '%s' not found\n", command.args[0]);
-        else
-            fprintf(stderr, "%serror:\n\tcommand '%s' not found\n", RED, command.args[0]);
     }
 
     return 1; // Indica que el comando se procesó correctamente
@@ -199,7 +211,7 @@ void runShell(FILE *inputFile)
 {
     while (1)
     {
-        command.size = 0;
+        commands.size = 0;
 
         if (!batchProcessing)
         {
@@ -223,38 +235,84 @@ void runShell(FILE *inputFile)
         }
 
         token = strtok(inputLine, " \n\t");
-        if (token == NULL)
+        if (token == NULL || strcmp(token, "&") == 0)
             continue;
+
+        struct Command *singleCommand = commands.singleCommands[commands.size++]; // start with first single command
+
+        // if first command is not allocated
+        if (singleCommand == NULL)
+        {
+            singleCommand = malloc(sizeof(struct Command));
+            INIT_ARR((*singleCommand), args, char *);
+            commands.singleCommands[commands.size - 1] = singleCommand;
+        }
+
+        // reset first single command
+        singleCommand->size = 0;
 
         while (token != NULL)
         {
-            command.args[command.size] = token;
-            command.size++;
-
-            REALLOC(command, args);
-
-            token = strtok(NULL, " \n\t");
-        }
-        command.args[command.size] = NULL;
-
-        if (strcmp(command.args[0], "exit") == 0)
-        {
-            if (command.size > 1)
+            // close current single command and build next one
+            if (strcmp(token, "&") == 0)
             {
-                fprintf(stderr, "error:\n\tcommand 'exit' does not accept arguments\n");
+                // get more space for more single commands if necessary
+                REALLOC(commands, singleCommands, struct Command *);
+
+                singleCommand->args[singleCommand->size] = NULL; // to be able to call execv (see man)
+                singleCommand = commands.singleCommands[commands.size++];
+
+                // if single command is not allocated
+                if (singleCommand == NULL)
+                {
+                    singleCommand = malloc(sizeof(struct Command));
+                    INIT_ARR((*singleCommand), args, char *);
+                    commands.singleCommands[commands.size - 1] = singleCommand;
+                }
+
+                // reset single command to 0 arguments
+                singleCommand->size = 0;
+
+                // next token
+                token = strtok(NULL, " \n\t");
                 continue;
             }
-            if (!batchProcessing)
-                printf("%sbyeee\n%s", CYAN, RESET);
-            break;
+
+            singleCommand->args[singleCommand->size] = token;
+            singleCommand->size++;
+
+            // realloc single command's arguments if necessary
+            REALLOC((*singleCommand), args, char *);
+
+            // next token
+            token = strtok(NULL, " \n\t");
         }
-        else
+        singleCommand->args[singleCommand->size] = NULL; // to be able to call execv (see man)
+
+        // if last single command is empty, ignore it
+        if (singleCommand->size == 0)
+            commands.size--;
+
+        int truncated = 0;
+        for (int i = 0; i < commands.size; i++)
         {
-            if (!processCommand())
+            singleCommand = commands.singleCommands[i];
+
+            if (!processCommand(singleCommand))
             {
+                truncated = 1;
                 break;
             }
         }
+        if (truncated)
+            break;
+
+        // wait for all children
+        for (int i = 0; i < commands.size; i++)
+        {
+            wait(NULL);
+        }
+
         // if (!batchProcessing)
         //     printf("\n");
     }
@@ -265,8 +323,8 @@ int main(int argc, char const *argv[])
     inputLine = malloc(sizeof(char) * LINE_MAX);
     filePath = malloc(sizeof(char) * LINE_MAX);
 
-    INIT_ARR(command, args);
-    INIT_ARR(path, entries);
+    INIT_ARR(commands, singleCommands, struct Command *);
+    INIT_ARR(path, entries, char *);
     path.entries[path.size] = malloc(strlen("/bin") * sizeof(char));
     strcpy(path.entries[path.size++], "/bin");
 
@@ -275,7 +333,7 @@ int main(int argc, char const *argv[])
     batchProcessing = argc == 2;
     if (argc > 2)
     {
-        fprintf(stderr, "unimplemented");
+        fprintf(stderr, "error:\n\twish only accepts one file to batch process\n");
         exitCode = 1;
         goto exit;
     }
@@ -300,10 +358,24 @@ int main(int argc, char const *argv[])
     }
 
 exit:
-    free(command.args);
+    // free all path entries
+    for (int i = 0; i < path.size; i++)
+    {
+        free(path.entries[i]);
+    }
     free(path.entries);
-    // FREE_ARR(command, args);
-    // FREE_ARR(path, entries);
+
+    // free all single commands that were allocated
+    for (int i = 0; i < commands.capacity; i++)
+    {
+        if (commands.singleCommands[i] != NULL)
+        {
+            free(commands.singleCommands[i]->args);
+            free(commands.singleCommands[i]);
+        }
+    }
+    free(commands.singleCommands);
+
     free(inputLine);
     free(filePath);
     exit(exitCode);
