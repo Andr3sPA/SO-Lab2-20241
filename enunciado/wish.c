@@ -9,18 +9,23 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 
+// ------------------------------------------- UTILS ------------------------------------------- //
+// initialize a dynamic array with initial capacity at 2
 #define INIT_ARR(arrStruct, arrField, arrType) \
     arrStruct.size = 0;                        \
     arrStruct.capacity = 2;                    \
     arrStruct.arrField = calloc(sizeof(arrType), arrStruct.capacity);
 
+// get more space for a dynamic array by doubling its capacity
 #define REALLOC(arrStruct, arrField, arrType)                                                   \
     if (arrStruct.size == arrStruct.capacity)                                                   \
     {                                                                                           \
         arrStruct.capacity *= 2;                                                                \
         arrStruct.arrField = realloc(arrStruct.arrField, sizeof(arrType) * arrStruct.capacity); \
     }
+// ------------------------------------------- UTILS ------------------------------------------- //
 
+// -------------------------- COLORS -------------------------- //
 #define RED "\x1B[31m"
 #define GREEN "\x1B[32m"
 #define YELLOW "\x1B[33m"
@@ -32,7 +37,10 @@
 #define BOLD "\x1B[1m"
 #define ITALIC "\x1B[3m"
 #define UNDERLINE "\x1B[4m"
+// -------------------------- COLORS -------------------------- //
 
+// -------------------------- GLOBAL VARIABLES -------------------------- //
+// dynamic array for path
 struct
 {
     char **entries;
@@ -40,10 +48,7 @@ struct
     int capacity;
 } path;
 
-char *inputLine;
-char *filePath;
-char *token;
-
+// dynamic array for a command's arguments
 struct Command
 {
     char **args;
@@ -51,6 +56,7 @@ struct Command
     int capacity;
 };
 
+// dynamic array for single commands executing in parallel
 struct
 {
     struct Command **singleCommands;
@@ -58,13 +64,34 @@ struct
     int capacity;
 } commands;
 
-int exitCode;
-int batchProcessing;
+// line to read from input file
+char *inputLine;
 
-/* 0 false, 1 true */
+// to extract tokens from inputLine
+char *token;
+
+// the file's path that'll be executed
+char *filePath;
+
+// program's exit code, can be 0 (success) or 1 (error);
+int exitCode;
+
+// when 1 indicates that the shell is processing a batch file, when 0 is in interactive mode
+int batchProcessing;
+// -------------------------- GLOBAL VARIABLES -------------------------- //
+
+/**
+ * @brief Checks if a relative or absolute file or command can be executed
+ *
+ * @param filename the relative or absolute file or command to evaluate
+ * @param filePath returns the complete absolute path of the command to pass to execv
+ * @return 1 if true, 0 if false
+ */
 int checkAccess(char *filename, char **filePath)
 {
     int canAccess;
+
+    // first check if absolute or relative path can be executed
     canAccess = 1 + access(filename, X_OK);
     if (canAccess)
     {
@@ -88,9 +115,87 @@ int checkAccess(char *filename, char **filePath)
     return 0;
 }
 
-/* 0 stop shell, 1 continue*/
+/**
+ * @brief processes and executes an external command if valid
+ *
+ * @param command Command to execute
+ * @return 1 if shell can continue, 0 if shell needs to exit
+ */
+int processExternalCommand(struct Command *command)
+{
+    // Busca el símbolo de redirección en los argumentos del comando
+    int redirectIndex = -1;
+    for (int i = 0; i < command->size; i++)
+    {
+
+        // Si se encuentra el símbolo de redirección
+        if (strcmp(command->args[i], ">") == 0)
+        {
+            redirectIndex = i;
+            if (redirectIndex == 0)
+            {
+                fprintf(stderr, "error:\n\tthe redirection must have a command to redirect its output\n");
+                return 1;
+            }
+
+            // Verifica si hay un nombre de archivo de salida después del símbolo de redirección
+            if (command->size - (redirectIndex + 1) != 1)
+            {
+                fprintf(stderr, "error:\n\tthe redirection must have only one output file\n");
+                return 1;
+            }
+
+            command->args[redirectIndex] = NULL; // to call execv (see docs)
+            break;
+        }
+    }
+
+    // check if command can be executed in any path entry
+    if (checkAccess(command->args[0], &filePath))
+    {
+
+        // create child process
+        pid_t child = fork();
+        if (child == -1) // error
+        {
+            fprintf(stderr, "error: %s\n", strerror(errno));
+            exitCode = 1;
+            return 0;
+        }
+        if (child == 0) // in child's process
+        {
+            if (redirectIndex != -1)
+            {
+                int redirectFileDescriptor = open(command->args[redirectIndex + 1], O_RDWR | O_CREAT | S_IRUSR | S_IWUSR);
+                dup2(redirectFileDescriptor, 1); // stdout
+                dup2(redirectFileDescriptor, 2); // stderr
+                close(redirectFileDescriptor);
+            }
+            execv(filePath, command->args);
+        }
+        // else: wait outside for all children (all single commands)
+    }
+    else
+    {
+        if (batchProcessing)
+            fprintf(stderr, "error:\n\tcommand '%s' not found\n", command->args[0]);
+        else
+            fprintf(stderr, "%serror:\n\tcommand '%s' not found\n", RED, command->args[0]);
+    }
+    return 1;
+}
+
+/**
+ * @brief processes and executes a command if valid
+ *
+ * @param command Command to execute
+ * @return 1 if shell can continue, 0 if shell needs to exit
+ */
 int processCommand(struct Command *command)
 {
+
+    // ----------------------------------------------------------------------------------- //
+    // -------------------------------- BUILT-IN COMMANDS -------------------------------- //
     if (strcmp(command->args[0], "exit") == 0)
     {
         if (command->size > 1)
@@ -141,78 +246,29 @@ int processCommand(struct Command *command)
         else
             waitpid(child, NULL, 0);
     }
+    // -------------------------------- BUILT-IN COMMANDS -------------------------------- //
+    // ----------------------------------------------------------------------------------- //
     else
     {
-        // Busca el símbolo de redirección en los argumentos del comando
-        int redirectIndex = -1;
-        for (int i = 0; i < command->size; i++)
-        {
-
-            // Si se encuentra el símbolo de redirección
-            if (strcmp(command->args[i], ">") == 0)
-            {
-                redirectIndex = i;
-                if (redirectIndex == 0)
-                {
-                    fprintf(stderr, "error:\n\tthe redirection must have a command to redirect its output\n");
-                    return 1;
-                }
-
-                // Verifica si hay un nombre de archivo de salida después del símbolo de redirección
-                if (command->size - (redirectIndex + 1) != 1)
-                {
-                    fprintf(stderr, "error:\n\tthe redirection must have only one output file\n");
-                    return 1;
-                }
-
-                command->args[redirectIndex] = NULL; // to call execv (see docs)
-                break;
-            }
-        }
-
-        // check if command can be executed in any path entry
-        if (checkAccess(command->args[0], &filePath))
-        {
-
-            pid_t child = fork();
-            if (child == -1)
-            {
-                fprintf(stderr, "error: %s\n", strerror(errno));
-                exitCode = 1;
-                return 0;
-            }
-            if (child == 0)
-            {
-                if (redirectIndex != -1)
-                {
-                    int redirectFileDescriptor = open(command->args[redirectIndex + 1], O_RDWR | O_CREAT | S_IRUSR | S_IWUSR);
-                    dup2(redirectFileDescriptor, 1); // stdout
-                    dup2(redirectFileDescriptor, 2); // stderr
-                    close(redirectFileDescriptor);
-                }
-                execv(filePath, command->args);
-            }
-            // else
-            // waitpid(child, NULL, 0);
-        }
-        else
-        {
-            if (batchProcessing)
-                fprintf(stderr, "error:\n\tcommand '%s' not found\n", command->args[0]);
-            else
-                fprintf(stderr, "%serror:\n\tcommand '%s' not found\n", RED, command->args[0]);
-        }
+        return processExternalCommand(command);
     }
 
     return 1; // Indica que el comando se procesó correctamente
 }
 
+/**
+ * @brief Runs the shell getting input commands from the provided file
+ * 
+ * @param inputFile The file where each command is extracted, can be stdin or a custom system file
+ */
 void runShell(FILE *inputFile)
 {
     while (1)
     {
+        // resets commands to have not even one single command
         commands.size = 0;
 
+        // if in interactive mode
         if (!batchProcessing)
         {
             char *cwd = getcwd(NULL, 0);
@@ -221,8 +277,10 @@ void runShell(FILE *inputFile)
             free(cwd);
         }
 
+        // get next line or command from input file
         fgets(inputLine, LINE_MAX, inputFile);
 
+        // if some error or end of file
         if (inputLine == NULL || feof(inputFile))
         {
             if (batchProcessing)
@@ -234,6 +292,7 @@ void runShell(FILE *inputFile)
             break;
         }
 
+        // get first token of command
         token = strtok(inputLine, " \n\t");
         if (token == NULL || strcmp(token, "&") == 0)
             continue;
@@ -292,7 +351,7 @@ void runShell(FILE *inputFile)
         // if last single command is empty, ignore it
         if (singleCommand->size == 0)
             commands.size--;
-
+        
         int truncated = 0;
         for (int i = 0; i < commands.size; i++)
         {
@@ -304,17 +363,18 @@ void runShell(FILE *inputFile)
                 break;
             }
         }
+        // if any command interrupts the shell, exit
         if (truncated)
             break;
 
-        // wait for all children
+        // wait for all children (wait for every command)
         for (int i = 0; i < commands.size; i++)
         {
             wait(NULL);
         }
 
-        // if (!batchProcessing)
-        //     printf("\n");
+        if (!batchProcessing)
+            printf("\n");
     }
 }
 
