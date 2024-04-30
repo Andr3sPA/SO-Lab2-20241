@@ -67,9 +67,6 @@ struct
 // line to read from input file
 char *inputLine;
 
-// to extract tokens from inputLine
-char *token;
-
 // the file's path that'll be executed
 char *filePath;
 
@@ -166,7 +163,7 @@ int processExternalCommand(struct Command *command)
         {
             if (redirectIndex != -1)
             {
-                int redirectFileDescriptor = open(command->args[redirectIndex + 1], O_RDWR | O_CREAT | S_IRUSR | S_IWUSR);
+                int redirectFileDescriptor = open(command->args[redirectIndex + 1], O_WRONLY | O_CREAT | O_TRUNC | O_SYNC, 0666);
                 dup2(redirectFileDescriptor, 1); // stdout
                 dup2(redirectFileDescriptor, 2); // stderr
                 close(redirectFileDescriptor);
@@ -258,16 +255,13 @@ int processCommand(struct Command *command)
 
 /**
  * @brief Runs the shell getting input commands from the provided file
- * 
+ *
  * @param inputFile The file where each command is extracted, can be stdin or a custom system file
  */
 void runShell(FILE *inputFile)
 {
     while (1)
     {
-        // resets commands to have not even one single command
-        commands.size = 0;
-
         // if in interactive mode
         if (!batchProcessing)
         {
@@ -292,66 +286,77 @@ void runShell(FILE *inputFile)
             break;
         }
 
+        // used to track single commands as tokens
+        char *singleCommandSavePtr = NULL;
+
+        // used to track command's tokens
+        char *tokenSavePtr = NULL;
+
+        struct Command *singleCommand;
+
+        // to extract single commands from inputLine
+        char *singleCommandLine;
+        
+        // to extract tokens from singleCommandLine
+        char *token;
+
         // get first token of command
-        token = strtok(inputLine, " \n\t");
-        if (token == NULL || strcmp(token, "&") == 0)
+        singleCommandLine = strtok_r(inputLine, "&", &singleCommandSavePtr);
+        if (singleCommandLine == NULL)
             continue;
+        // else: there is at least one command
 
-        struct Command *singleCommand = commands.singleCommands[commands.size++]; // start with first single command
+        // resets commands to have not even one single command
+        commands.size = 0;
 
-        // if first command is not allocated
-        if (singleCommand == NULL)
+        do
         {
-            singleCommand = malloc(sizeof(struct Command));
-            INIT_ARR((*singleCommand), args, char *);
-            commands.singleCommands[commands.size - 1] = singleCommand;
-        }
+            // get more space for more single commands if necessary
+            REALLOC(commands, singleCommands, struct Command *);
 
-        // reset first single command
-        singleCommand->size = 0;
+            singleCommand = commands.singleCommands[commands.size++];
 
-        while (token != NULL)
-        {
-            // close current single command and build next one
-            if (strcmp(token, "&") == 0)
+            // if current command is not allocated
+            if (singleCommand == NULL)
             {
-                // get more space for more single commands if necessary
-                REALLOC(commands, singleCommands, struct Command *);
+                singleCommand = malloc(sizeof(struct Command));
+                INIT_ARR((*singleCommand), args, char *);
+                commands.singleCommands[commands.size - 1] = singleCommand;
+            }
 
-                singleCommand->args[singleCommand->size] = NULL; // to be able to call execv (see man)
-                singleCommand = commands.singleCommands[commands.size++];
+            // reset current single command
+            singleCommand->size = 0;
 
-                // if single command is not allocated
-                if (singleCommand == NULL)
-                {
-                    singleCommand = malloc(sizeof(struct Command));
-                    INIT_ARR((*singleCommand), args, char *);
-                    commands.singleCommands[commands.size - 1] = singleCommand;
-                }
-
-                // reset single command to 0 arguments
-                singleCommand->size = 0;
-
-                // next token
-                token = strtok(NULL, " \n\t");
+            token = strtok_r(singleCommandLine, " \n\t", &tokenSavePtr);
+            if (token == NULL)
+            {
+                singleCommandLine = strtok_r(NULL, "&", &singleCommandSavePtr);
                 continue;
             }
 
-            singleCommand->args[singleCommand->size] = token;
-            singleCommand->size++;
+            do
+            {
+                // add token to single command
+                singleCommand->args[singleCommand->size] = token;
+                singleCommand->size++;
 
-            // realloc single command's arguments if necessary
-            REALLOC((*singleCommand), args, char *);
+                // realloc single command's arguments if necessary
+                REALLOC((*singleCommand), args, char *);
 
-            // next token
-            token = strtok(NULL, " \n\t");
-        }
-        singleCommand->args[singleCommand->size] = NULL; // to be able to call execv (see man)
+                // next token
+                token = strtok_r(NULL, " \n\t", &tokenSavePtr);
+            } while (token != NULL);
+
+            singleCommand->args[singleCommand->size] = NULL; // to be able to call execv (see "man exev")
+
+            // next single command
+            singleCommandLine = strtok_r(NULL, "&", &singleCommandSavePtr);
+        } while (singleCommandLine != NULL);
 
         // if last single command is empty, ignore it
         if (singleCommand->size == 0)
             commands.size--;
-        
+
         int truncated = 0;
         for (int i = 0; i < commands.size; i++)
         {
